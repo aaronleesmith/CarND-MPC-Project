@@ -32,6 +32,11 @@ double deg2rad(double x) { return x * pi() / 180; }
  */
 double rad2deg(double x) { return x * 180 / pi(); }
 
+/**
+ * Checks if the JSON string from the simulator has data.
+ * @param s
+ * @return
+ */
 string hasData(string s) {
   auto found_null = s.find("null");
   auto b1 = s.find_first_of("[");
@@ -44,7 +49,12 @@ string hasData(string s) {
   return "";
 }
 
-// Evaluate a polynomial.
+/**
+ * Evaluates a polynomial given coefficients and x.
+ * @param coeffs
+ * @param x
+ * @return
+ */
 double polyeval(Eigen::VectorXd coeffs, double x) {
   double result = 0.0;
   for (int i = 0; i < coeffs.size(); i++) {
@@ -53,7 +63,13 @@ double polyeval(Eigen::VectorXd coeffs, double x) {
   return result;
 }
 
-
+/**
+ * Fits a set of xvals and yvals to an order-order polynomial.
+ * @param xvals
+ * @param yvals
+ * @param order
+ * @return
+ */
 Eigen::VectorXd polyfit(Eigen::VectorXd xvals, Eigen::VectorXd yvals,
                         int order) {
   assert(xvals.size() == yvals.size());
@@ -75,12 +91,19 @@ Eigen::VectorXd polyfit(Eigen::VectorXd xvals, Eigen::VectorXd yvals,
   return result;
 }
 
+/**
+ * Converts a set of x, y points from the map coordinate system to the car coordinate system.
+ * @param x
+ * @param y
+ * @param psi
+ * @return [x, y]
+ */
 vector<double> map2Car(double x, double y, double psi) {
   return { x * cos(psi) + y * sin(psi), -x * sin(psi) + y * cos(psi) };
 }
 
-double mph2Mps(double mph) {
-  return mph * 1609. / 3600.;
+double mph2Mps(double mph_v) {
+  return mph_v * (1609. / 3600.);
 }
 
 int main() {
@@ -95,7 +118,6 @@ int main() {
     // The 4 signifies a websocket message
     // The 2 signifies a websocket event
     string sdata = string(data).substr(0, length);
-    cout << sdata << endl;
     if (sdata.size() > 2 && sdata[0] == '4' && sdata[1] == '2') {
       string s = hasData(sdata);
       if (s != "") {
@@ -103,6 +125,7 @@ int main() {
         string event = j[0].get<string>();
         if (event == "telemetry") {
           // j[1] is the data JSON object
+          long long latency = 100; // In milliseconds.
 
           /**
            * The global x positions of the waypoints.
@@ -134,11 +157,6 @@ int main() {
            */
           double velocity_in_mph = j[1]["speed"];
 
-          /*
-           * The current velocity in m/s
-           */
-          double velocity_in_mps = mph2Mps(velocity_in_mph);
-
           /**
            * Placeholder variables for the MPC's estimated trajectory.
            */
@@ -151,7 +169,14 @@ int main() {
           vector<double> next_x_vals(waypoint_positions_x.size());
           vector<double> next_y_vals(waypoint_positions_y.size());
 
-
+          /**
+           * We adjust the car's position and orientation forward based on the latency.
+           */
+          if (latency > 0) {
+            double velocity_in_mps = mph2Mps(velocity_in_mph);
+            vehicle_global_x += velocity_in_mps * cos(vehicle_orientation) * latency * .001; // Use seconds here instead of milliseconds.
+            vehicle_global_y += velocity_in_mps * sin(vehicle_orientation) * latency * .001; // Use seconds here instead of milliseconds.
+          }
           /**
            * Create a set of errors in the vehicles coordinate space.
            */
@@ -173,7 +198,7 @@ int main() {
           /**
            * Fit a line to the calculated errors.
            */
-          int polynomial_order = 2;
+          int polynomial_order = 3;
           auto coeffs = polyfit(vehicle_errors_in_vehicle_space_x,
                                 vehicle_errors_in_vehicle_space_y,
                                 polynomial_order);
@@ -185,21 +210,27 @@ int main() {
           state << 0,
                    0,
                    0,
-                   velocity_in_mps,
+                   velocity_in_mph,
                    polyeval(coeffs, 0.0),
                    -atan(coeffs[1]);
 
-          double target_velocity_in_mph = 35;
+          double target_velocity_in_mph = 45;
           /**
            * Solve the non-linear problem using the MPC.
            */
-          auto vars = mpc.Solve(state, coeffs, mpc_x_vals, mpc_y_vals, mph2Mps(target_velocity_in_mph));
+          bool ok;
+          auto vars = mpc.Solve(state, coeffs, mpc_x_vals, mpc_y_vals, target_velocity_in_mph, ok);
 
-          double steer_value = vars[0] / deg2rad(25);
-          double throttle_value = vars[1];
+          double steer_value;
+          double throttle_value;
+
+
+          steer_value = vars[0];
+          throttle_value = vars[1];
+
 
           json msgJson;
-          msgJson["steering_angle"] = steer_value;
+          msgJson["steering_angle"] = -steer_value;
           msgJson["throttle"] = throttle_value;
 
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
@@ -217,7 +248,7 @@ int main() {
 
 
           auto msg = "42[\"steer\"," + msgJson.dump() + "]";
-          std::cout << msg << std::endl;
+//          std::cout << msg << std::endl;
           // Latency
           // The purpose is to mimic real driving conditions where
           // the car does actuate the commands instantly.
@@ -227,7 +258,8 @@ int main() {
           //
           // NOTE: REMEMBER TO SET THIS TO 100 MILLISECONDS BEFORE
           // SUBMITTING.
-//          this_thread::sleep_for(chrono::milliseconds(100));
+          // TO REVIEWER: LATENCY IS SET TO 100 AT THE TOP OF THIS METHOD.
+          this_thread::sleep_for(chrono::milliseconds(latency));
           ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
         }
       } else {

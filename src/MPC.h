@@ -18,7 +18,8 @@ class MPC {
                          Eigen::VectorXd coeffs,
                          vector<double> &mpc_x_vals,
                          vector<double> &mpc_y_vals,
-                         double ref_v);
+                         double ref_v,
+                         bool &ok);
 };
 
 #endif /* MPC_H */

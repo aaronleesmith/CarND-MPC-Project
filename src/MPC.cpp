@@ -5,7 +5,7 @@
 
 using CppAD::AD;
 
-size_t N = 25;
+size_t N = 15;
 double dt = 0.05;
 
 // This is the length from front to CoG that has a similar radius.
@@ -42,18 +42,18 @@ class FG_eval {
      * Each one of the cost functions below has an associated weight.
      * Increasing the weight will increase the cost for that action.
      */
-    double weight_cte = 5.,
+    double weight_cte = 2,
            weight_epsi = 1,
            weight_speed = 1,
-           weight_steering_angle = 1000.,
+           weight_steering_angle = 250.,
            weight_acceleration = 1,
            weight_actuator_gap_steering = 1,
            weight_actuator_gap_acceleration = 1;
 
     // The part of the cost based on the reference state.
     for (int i = 0; i < N; i++) {
-      fg[0] += CppAD::pow(vars[cte_start + i], 2) * weight_cte;
-      fg[0] += CppAD::pow(vars[epsi_start + i], 2) * weight_epsi;
+      fg[0] += CppAD::pow(vars[cte_start + i] - ref_cte, 2) * weight_cte;
+      fg[0] += CppAD::pow(vars[epsi_start + i] - ref_epsi, 2) * weight_epsi;
       fg[0] += CppAD::pow(vars[v_start + i] - ref_v, 2) * weight_speed;
     }
 
@@ -108,8 +108,15 @@ class FG_eval {
       AD<double> delta0 = vars[delta_start + i];
       AD<double> a0 = vars[a_start + i];
 
-      AD<double> f0 = coeffs[0] + coeffs[1] * x0;
-      AD<double> psides0 = CppAD::atan(coeffs[1]);
+      /**
+       * Dynamically build the polynomial based on the number of coefficients.
+       */
+      AD<double> f0 = coeffs[0];
+      for(int i = 1; i < coeffs.size(); i++) {
+        f0 += coeffs[i] * CppAD::pow(x0,i);
+      }
+
+      AD<double> psides0 = CppAD::atan(coeffs[1] + x0 * (2 * coeffs[2] + x0 * 3 * coeffs[3]));
 
 
       fg[2 + x_start + i] = x1 - (x0 + v0 * CppAD::cos(psi0) * dt);
@@ -134,10 +141,10 @@ vector<double> MPC::Solve(Eigen::VectorXd state,
                           Eigen::VectorXd coeffs,
                           vector<double> &mpc_x_vals,
                           vector<double> &mpc_y_vals,
-                          double ref_v) {
+                          double ref_v,
+                          bool &ok) {
   typedef CPPAD_TESTVECTOR(double) Dvector;
 
-  bool ok = true;
   size_t i,
          n_vars = N * 6 + (N - 1) * 2,
          n_constraints = N * 6;
@@ -172,8 +179,6 @@ vector<double> MPC::Solve(Eigen::VectorXd state,
   // Set the number of constraints
   n_constraints = N * 6;
 
-  std::cout << N;
-
   // Initial value of the independent variables.
   // SHOULD BE 0 besides initial state.
   for (int i = 0; i < n_vars; i++) {
@@ -200,15 +205,15 @@ vector<double> MPC::Solve(Eigen::VectorXd state,
   // degrees (values in radians).
   // NOTE: Feel free to change this to something else.
   for (int i = delta_start; i < a_start; i++) {
-    vars_lowerbound[i] = -0.436332;
-    vars_upperbound[i] = 0.436332;
+    vars_lowerbound[i] = -0.436332 * 2;
+    vars_upperbound[i] = 0.436332 * 2;
   }
 
   // Acceleration / deceleration upper and lower limits.
   // todo: potentially change this to something else.
   for (int i = a_start; i < n_vars; i++) {
-    vars_lowerbound[i] = -1.0;
-    vars_upperbound[i] = 1.0;
+    vars_lowerbound[i] = -0.5;
+    vars_upperbound[i] = 0.5;
   }
 
   // Lower and upper limits for constraints
@@ -264,7 +269,6 @@ vector<double> MPC::Solve(Eigen::VectorXd state,
 
   // Cost
   auto cost = solution.obj_value;
-  std::cout << "Cost " << cost << std::endl;
 
   mpc_x_vals.resize(N);
   mpc_y_vals.resize(N);
@@ -275,8 +279,8 @@ vector<double> MPC::Solve(Eigen::VectorXd state,
   }
 
   /**
-   * Returns the first actuator values.
+   * Use an average of the next 2 values to smooth.
    */
-  return {solution.x[delta_start],   solution.x[a_start]};
+  return {(solution.x[delta_start] + solution.x[delta_start + 1]) / 2.,  (solution.x[a_start] + solution.x[a_start + 1] / 2.)};
 
 }
